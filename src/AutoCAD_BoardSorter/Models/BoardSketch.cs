@@ -24,5 +24,6 @@ namespace AutoCAD_BoardSorter.Models
         public int StartIndex { get; set; }
         public int EndIndex { get; set; }
         public string Coating { get; set; }
+        public bool ShowLabel { get; set; }
     }
 }

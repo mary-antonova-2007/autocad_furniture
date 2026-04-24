@@ -1661,7 +1661,7 @@ namespace AutoCAD_BoardSorter
                 BoardSketchPoint a = projected[edge.StartIndex];
                 BoardSketchPoint b = projected[edge.EndIndex];
                 string number = EdgeCoatingNumberText(edge.Coating, coatingNumbers);
-                AppendEdgeLine(sb, a.X, a.Y, b.X, b.Y, number, (a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0);
+                AppendEdgeLine(sb, a.X, a.Y, b.X, b.Y, number, (a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0, edge.ShowLabel);
             }
 
             sb.Append("<text x=\"210\" y=\"122\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"18\" font-weight=\"700\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#111827\">")
@@ -1729,6 +1729,11 @@ namespace AutoCAD_BoardSorter
 
         private static void AppendEdgeLine(StringBuilder sb, double x1, double y1, double x2, double y2, string coatingNumber, double textX, double textY)
         {
+            AppendEdgeLine(sb, x1, y1, x2, y2, coatingNumber, textX, textY, true);
+        }
+
+        private static void AppendEdgeLine(StringBuilder sb, double x1, double y1, double x2, double y2, string coatingNumber, double textX, double textY, bool showLabel)
+        {
             if (string.IsNullOrWhiteSpace(coatingNumber))
             {
                 sb.Append("<line x1=\"").Append(SvgNumber(x1)).Append("\" y1=\"").Append(SvgNumber(y1))
@@ -1741,6 +1746,11 @@ namespace AutoCAD_BoardSorter
             sb.Append("<line x1=\"").Append(SvgNumber(x1)).Append("\" y1=\"").Append(SvgNumber(y1))
                 .Append("\" x2=\"").Append(SvgNumber(x2)).Append("\" y2=\"").Append(SvgNumber(y2))
                 .Append("\" stroke=\"").Append(color).Append("\" stroke-width=\"6\" stroke-linecap=\"round\"/>");
+            if (!showLabel)
+            {
+                return;
+            }
+
             sb.Append("<circle cx=\"").Append(SvgNumber(textX)).Append("\" cy=\"").Append(SvgNumber(textY))
                 .Append("\" r=\"13\" fill=\"").Append(color).Append("\"/>");
             sb.Append("<text x=\"").Append(SvgNumber(textX)).Append("\" y=\"").Append(SvgNumber(textY))

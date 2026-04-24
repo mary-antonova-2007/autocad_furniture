@@ -38,8 +38,7 @@ namespace AutoCAD_BoardSorter.Geometry
         private sealed class EdgeRecord
         {
             public string Key;
-            public Point3d Start;
-            public Point3d End;
+            public readonly List<Point3d> Points = new List<Point3d>();
         }
 
         public BoardCoatingSlots Analyze(Solid3d solid, Transaction tr, SpecificationData specification)
@@ -177,12 +176,12 @@ namespace AutoCAD_BoardSorter.Geometry
                                 continue;
                             }
 
-                            edgeRecords.Add(new EdgeRecord
+                            EdgeRecord record = new EdgeRecord { Key = edgeKey };
+                            record.Points.AddRange(GetEdgeSamplePoints(edge));
+                            if (record.Points.Count >= 2)
                             {
-                                Key = edgeKey,
-                                Start = edge.Vertex1.Point,
-                                End = edge.Vertex2.Point
-                            });
+                                edgeRecords.Add(record);
+                            }
                         }
                     }
 
@@ -532,15 +531,71 @@ namespace AutoCAD_BoardSorter.Geometry
             var pointIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (EdgeRecord edge in edgeRecords)
             {
-                int start = AddSketchPoint(sketch, pointIndexes, Project(edge.Start, axes));
-                int end = AddSketchPoint(sketch, pointIndexes, Project(edge.End, axes));
-                sketch.Edges.Add(new BoardSketchEdge
+                string coating = FindCoatingForEdge(edge.Key, faces, plateFace, coatings);
+                int previous = -1;
+                int segmentIndex = 0;
+                int labelSegment = Math.Max(0, (edge.Points.Count - 2) / 2);
+                foreach (Point3d point in edge.Points)
                 {
-                    StartIndex = start,
-                    EndIndex = end,
-                    Coating = FindCoatingForEdge(edge.Key, faces, plateFace, coatings)
-                });
+                    int current = AddSketchPoint(sketch, pointIndexes, Project(point, axes));
+                    if (previous >= 0 && previous != current)
+                    {
+                        sketch.Edges.Add(new BoardSketchEdge
+                        {
+                            StartIndex = previous,
+                            EndIndex = current,
+                            Coating = coating,
+                            ShowLabel = segmentIndex == labelSegment
+                        });
+                        segmentIndex++;
+                    }
+
+                    previous = current;
+                }
             }
+        }
+
+        private static IEnumerable<Point3d> GetEdgeSamplePoints(BrepEdge edge)
+        {
+            try
+            {
+                var arc = edge.Curve as CircularArc3d;
+                if (arc != null)
+                {
+                    return GetCircularArcSamplePoints(edge, arc);
+                }
+            }
+            catch
+            {
+            }
+
+            return new[] { edge.Vertex1.Point, edge.Vertex2.Point };
+        }
+
+        private static IEnumerable<Point3d> GetCircularArcSamplePoints(BrepEdge edge, CircularArc3d arc)
+        {
+            Point3d vertexStart = edge.Vertex1.Point;
+            Point3d vertexEnd = edge.Vertex2.Point;
+            double start = arc.StartAngle;
+            double end = arc.EndAngle;
+            double sweep = end - start;
+            if (sweep < 0.0)
+            {
+                sweep += Math.PI * 2.0;
+            }
+
+            int segments = Math.Max(6, Math.Min(48, (int)Math.Ceiling(Math.Abs(sweep) / (Math.PI / 24.0))));
+            var forward = new List<Point3d>();
+            for (int i = 0; i <= segments; i++)
+            {
+                double parameter = start + sweep * i / segments;
+                forward.Add(arc.EvaluatePoint(parameter));
+            }
+
+            List<Point3d> reverse = forward.AsEnumerable().Reverse().ToList();
+            double forwardScore = forward[0].DistanceTo(vertexStart) + forward[forward.Count - 1].DistanceTo(vertexEnd);
+            double reverseScore = reverse[0].DistanceTo(vertexStart) + reverse[reverse.Count - 1].DistanceTo(vertexEnd);
+            return reverseScore < forwardScore ? reverse : forward;
         }
 
         private static BoardSketchPoint Project(Point3d point, BoardAxes axes)
