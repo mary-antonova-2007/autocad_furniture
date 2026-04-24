@@ -11,11 +11,11 @@
     <ComponentEntry
       AppName="AutoCAD_BoardSorter"
       AppDescription="Board dimensions sorter"
-      ModuleName="./Contents/Windows/2025/AutoCAD_BoardSorter.dll"
+      ModuleName="./Contents/Windows/2022/AutoCAD_BoardSorter.dll"
       AppType=".Net"
       LoadOnAutoCADStartup="True"
       LoadOnCommandInvocation="True">
-      <RuntimeRequirements OS="Win64" SeriesMin="R25.0" SeriesMax="R25.0" />
+      <RuntimeRequirements OS="Win64" SeriesMin="R24.1" SeriesMax="R24.1" />
       <Commands GroupName="BoardSorterCommands">
       <Command Global="BDSORT" Local="BDSORT" />
       <Command Global="BDPALETTE" Local="BDPALETTE" />

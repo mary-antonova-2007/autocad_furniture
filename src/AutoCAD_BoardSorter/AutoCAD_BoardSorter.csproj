@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net48</TargetFramework>
     <OutputType>Library</OutputType>
     <RootNamespace>AutoCAD_BoardSorter</RootNamespace>
     <AssemblyName>AutoCAD_BoardSorter</AssemblyName>
@@ -14,23 +14,31 @@
 
   <PropertyGroup>
     <AcadDir Condition="'$(AcadDir)' == ''">$(ACAD)</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2022</AcadDir>
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="accoremgd">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2025\accoremgd.dll</HintPath>
+      <HintPath>$(AcadDir)\accoremgd.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="Acdbmgd">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2025\acdbmgd.dll</HintPath>
+      <HintPath>$(AcadDir)\acdbmgd.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="acdbmgdbrep">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2025\acdbmgdbrep.dll</HintPath>
+      <HintPath>$(AcadDir)\acdbmgdbrep.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="Acmgd">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2025\acmgd.dll</HintPath>
+      <HintPath>$(AcadDir)\acmgd.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="AcWindows">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2025\AcWindows.dll</HintPath>
+      <HintPath>$(AcadDir)\AcWindows.dll</HintPath>
+      <Private>false</Private>
     </Reference>
   </ItemGroup>
 </Project>

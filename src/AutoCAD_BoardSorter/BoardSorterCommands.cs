@@ -121,6 +121,8 @@ namespace AutoCAD_BoardSorter
                         LengthMm = Round1(length),
                         WidthMm = Round1(width),
                         ThicknessMm = Round1(thickness),
+                        PartName = FirstNonBlank(existingSpecification == null ? null : existingSpecification.PartName, "Деталь"),
+                        Material = FirstNonBlank(existingSpecification == null ? null : existingSpecification.Material, (string.IsNullOrWhiteSpace(solid.Layer) ? "Материал" : solid.Layer.Trim()) + " " + FormatMaterialThickness(Round1(thickness)) + " мм"),
                         Method = method,
                         RotateLengthWidth = existingSpecification != null && existingSpecification.RotateLengthWidth,
                         Coatings = coatingAnalyzer.Analyze(solid, tr, existingSpecification, log),
@@ -159,8 +161,8 @@ namespace AutoCAD_BoardSorter
             int specificationCount = WriteSpecifications(db, groups, assemblyNumber);
 
             PrintReport(ed, groups);
-            string csvPath = WriteCsv(db, groups);
-            string xlsxPath = WriteXlsx(db, groups);
+            string csvPath = WriteCsv(db, groups, assemblyNumber);
+            string xlsxPath = WriteXlsx(db, groups, assemblyNumber);
             ed.WriteMessage("\nСпецификация записана в тел: {0}.", specificationCount);
             ed.WriteMessage("\nCSV: {0}", csvPath);
             ed.WriteMessage("\nExcel: {0}", xlsxPath);
@@ -795,6 +797,8 @@ namespace AutoCAD_BoardSorter
                     x.ThicknessMm,
                     x.Fingerprint,
                     x.RotateLengthWidth,
+                    x.PartName,
+                    x.Material,
                     P1 = Slot(x.Coatings, "P1"),
                     P2 = Slot(x.Coatings, "P2"),
                     L1 = Slot(x.Coatings, "L1"),
@@ -811,6 +815,8 @@ namespace AutoCAD_BoardSorter
                         LengthMm = first.LengthMm,
                         WidthMm = first.WidthMm,
                         ThicknessMm = first.ThicknessMm,
+                        PartName = first.PartName,
+                        Material = first.Material,
                         Method = first.Method,
                         RotateLengthWidth = first.RotateLengthWidth,
                         Coatings = first.Coatings ?? new BoardCoatingSlots(),
@@ -831,14 +837,36 @@ namespace AutoCAD_BoardSorter
 
             switch (name)
             {
-                case "P1": return coatings.P1 ?? string.Empty;
-                case "P2": return coatings.P2 ?? string.Empty;
+                case "P1": return NormalizePlateSlot(coatings, true);
+                case "P2": return NormalizePlateSlot(coatings, false);
                 case "L1": return coatings.L1 ?? string.Empty;
                 case "L2": return coatings.L2 ?? string.Empty;
                 case "W1": return coatings.W1 ?? string.Empty;
                 case "W2": return coatings.W2 ?? string.Empty;
                 default: return string.Empty;
             }
+        }
+
+        private static string NormalizePlateSlot(BoardCoatingSlots coatings, bool first)
+        {
+            string primary = (coatings.P1 ?? string.Empty).Trim();
+            string secondary = (coatings.P2 ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(primary) && !string.IsNullOrWhiteSpace(secondary))
+            {
+                return first ? primary : secondary;
+            }
+
+            if (!string.IsNullOrWhiteSpace(primary))
+            {
+                return primary;
+            }
+
+            if (!string.IsNullOrWhiteSpace(secondary))
+            {
+                return secondary;
+            }
+
+            return string.Empty;
         }
 
         private static int WriteSpecifications(Database db, IList<BoardGroup> groups, string assemblyNumber)
@@ -876,6 +904,11 @@ namespace AutoCAD_BoardSorter
             bool rotate = existing != null ? existing.RotateLengthWidth : group.RotateLengthWidth;
             double length = rotate ? group.WidthMm : group.LengthMm;
             double width = rotate ? group.LengthMm : group.WidthMm;
+            string generatedNote = BuildGeneratedNote(group);
+            string existingNote = existing == null ? string.Empty : (existing.Note ?? string.Empty);
+            string finalNote = string.IsNullOrWhiteSpace(existingNote)
+                ? generatedNote
+                : (string.IsNullOrWhiteSpace(generatedNote) ? existingNote : existingNote + "; " + generatedNote);
 
             return new SpecificationData
             {
@@ -887,7 +920,7 @@ namespace AutoCAD_BoardSorter
                 WidthMm = width,
                 RotateLengthWidth = rotate,
                 Material = FirstNonBlank(existing == null ? null : existing.Material, DefaultMaterial(group)),
-                Note = existing == null ? string.Empty : (existing.Note ?? string.Empty)
+                Note = finalNote
             };
         }
 
@@ -895,6 +928,26 @@ namespace AutoCAD_BoardSorter
         {
             string layer = string.IsNullOrWhiteSpace(group.Layer) ? "Материал" : group.Layer.Trim();
             return layer + " " + FormatMaterialThickness(group.ThicknessMm) + " мм";
+        }
+
+        private static string DisplayPartName(BoardGroup group)
+        {
+            return group == null ? "Деталь" : FirstNonBlank(group.PartName, "Деталь");
+        }
+
+        private static string DisplayMaterial(BoardGroup group)
+        {
+            return group == null ? string.Empty : FirstNonBlank(group.Material, DefaultMaterial(group));
+        }
+
+        private static double DisplayLength(BoardGroup group)
+        {
+            return group != null && group.RotateLengthWidth ? group.WidthMm : group.LengthMm;
+        }
+
+        private static double DisplayWidth(BoardGroup group)
+        {
+            return group != null && group.RotateLengthWidth ? group.LengthMm : group.WidthMm;
         }
 
         private static string FormatMaterialThickness(double value)
@@ -1161,10 +1214,13 @@ namespace AutoCAD_BoardSorter
                 ed.WriteMessage("\n  {0} / {1} мм: {2} типов, {3} шт.", group.Key.Layer, group.Key.ThicknessKey, group.Count(), group.Sum(x => x.Quantity));
             }
 
+            PrintMaterialSummary(ed, groups);
+            PrintEdgeSummary(ed, groups);
+
             ed.WriteMessage("\n{0}", new string('=', 132));
         }
 
-        private static string WriteCsv(Database db, IList<BoardGroup> groups)
+        private static string WriteCsv(Database db, IList<BoardGroup> groups, string assemblyNumber)
         {
             string drawingPath = db.Filename;
             string directory = string.IsNullOrWhiteSpace(drawingPath)
@@ -1179,32 +1235,46 @@ namespace AutoCAD_BoardSorter
             Dictionary<string, int> coatingNumbers = BuildCoatingNumbers(groups);
 
             var sb = new StringBuilder();
-            sb.AppendLine("Layer;Qty;Thickness_mm;Length_mm;Width_mm;Rotate;P1;P2;L1;L2;W1;W2;Sketch;Handles;Method");
+            sb.AppendLine("Сборка;Деталь;Наименование;Материал;Длина;Ширина;Толщина;Кол-во;P1;P2;L1;L2;W1;W2;Примечание");
 
             foreach (BoardGroup group in groups)
             {
-                sb.Append(EscapeCsv(group.Layer)).Append(';')
-                    .Append(group.Quantity.ToString(CultureInfo.InvariantCulture)).Append(';')
+                sb.Append(EscapeCsv(assemblyNumber)).Append(';')
+                    .Append(group.Number.ToString(CultureInfo.InvariantCulture)).Append(';')
+                    .Append(EscapeCsv(DisplayPartName(group))).Append(';')
+                    .Append(EscapeCsv(DisplayMaterial(group))).Append(';')
+                    .Append(Format(DisplayLength(group))).Append(';')
+                    .Append(Format(DisplayWidth(group))).Append(';')
                     .Append(Format(group.ThicknessMm)).Append(';')
-                    .Append(Format(group.LengthMm)).Append(';')
-                    .Append(Format(group.WidthMm)).Append(';')
-                    .Append(group.RotateLengthWidth ? "Да" : "Нет").Append(';')
+                    .Append(group.Quantity.ToString(CultureInfo.InvariantCulture)).Append(';')
                     .Append(EscapeCsv(CoatingNumberText(Slot(group.Coatings, "P1"), coatingNumbers))).Append(';')
                     .Append(EscapeCsv(CoatingNumberText(Slot(group.Coatings, "P2"), coatingNumbers))).Append(';')
                     .Append(EscapeCsv(EdgeCoatingNumberText(Slot(group.Coatings, "L1"), coatingNumbers))).Append(';')
                     .Append(EscapeCsv(EdgeCoatingNumberText(Slot(group.Coatings, "L2"), coatingNumbers))).Append(';')
                     .Append(EscapeCsv(EdgeCoatingNumberText(Slot(group.Coatings, "W1"), coatingNumbers))).Append(';')
                     .Append(EscapeCsv(EdgeCoatingNumberText(Slot(group.Coatings, "W2"), coatingNumbers))).Append(';')
-                    .Append(EscapeCsv(BuildTextSketch(group, coatingNumbers))).Append(';')
-                    .Append(EscapeCsv(group.Handles)).Append(';')
-                    .Append(EscapeCsv(group.Method)).AppendLine();
+                    .Append(EscapeCsv(BuildGeneratedNote(group))).AppendLine();
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("Материалы;Тип;Количество");
+            foreach (string line in BuildMaterialSummaryLines(groups))
+            {
+                sb.AppendLine(EscapeCsv(line));
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("Кромка;Количество");
+            foreach (string line in BuildEdgeSummaryLines(groups))
+            {
+                sb.AppendLine(EscapeCsv(line));
             }
 
             File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
             return path;
         }
 
-        private static string WriteXlsx(Database db, IList<BoardGroup> groups)
+        private static string WriteXlsx(Database db, IList<BoardGroup> groups, string assemblyNumber)
         {
             string drawingPath = db.Filename;
             string directory = string.IsNullOrWhiteSpace(drawingPath)
@@ -1226,7 +1296,7 @@ namespace AutoCAD_BoardSorter
                 AddZipText(archive, "xl/workbook.xml", XlsxWorkbook());
                 AddZipText(archive, "xl/_rels/workbook.xml.rels", XlsxWorkbookRels());
                 AddZipText(archive, "xl/styles.xml", XlsxStyles());
-                AddZipText(archive, "xl/worksheets/sheet1.xml", XlsxSheet(groups, coatingNumbers));
+                AddZipText(archive, "xl/worksheets/sheet1.xml", XlsxSheet(groups, coatingNumbers, assemblyNumber));
                 AddZipText(archive, "xl/worksheets/_rels/sheet1.xml.rels", XlsxSheetRels());
                 AddZipText(archive, "xl/drawings/drawing1.xml", XlsxDrawing(groups));
                 AddZipText(archive, "xl/drawings/_rels/drawing1.xml.rels", XlsxDrawingRels(groups));
@@ -1323,17 +1393,17 @@ namespace AutoCAD_BoardSorter
                 + "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills>"
                 + "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
                 + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
-                + "<cellXfs count=\"2\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/><xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/></cellXfs>"
+                + "<cellXfs count=\"3\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf><xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf></cellXfs>"
                 + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
                 + "</styleSheet>";
         }
 
-        private static string XlsxSheet(IList<BoardGroup> groups, Dictionary<string, int> coatingNumbers)
+        private static string XlsxSheet(IList<BoardGroup> groups, Dictionary<string, int> coatingNumbers, string assemblyNumber)
         {
             string[] headers =
             {
-                "N", "Layer", "Qty", "Thickness_mm", "Length_mm", "Width_mm",
-                "Rotate", "P1", "P2", "L1", "L2", "W1", "W2", "Sketch", "Handles", "Method"
+                "Сборка", "Деталь", "Наименование", "Материал", "Длина", "Ширина", "Толщина", "Кол-во",
+                "P1", "P2", "L1", "L2", "W1", "W2", "Примечание", "Изображение"
             };
 
             var sb = new StringBuilder();
@@ -1342,7 +1412,7 @@ namespace AutoCAD_BoardSorter
             sb.Append("<cols>");
             for (int i = 1; i <= headers.Length; i++)
             {
-                double width = i == 14 ? 66.0 : (i == 15 ? 34.0 : (i >= 8 && i <= 13 ? 9.0 : 13.0));
+                double width = i == 3 ? 20.0 : (i == 4 ? 24.0 : (i == 15 ? 30.0 : (i == 16 ? 46.0 : (i == 8 ? 9.0 : (i >= 9 && i <= 14 ? 9.0 : 13.0)))));
                 sb.Append("<col min=\"").Append(i.ToString(CultureInfo.InvariantCulture))
                     .Append("\" max=\"").Append(i.ToString(CultureInfo.InvariantCulture))
                     .Append("\" width=\"").Append(width.ToString("0.#", CultureInfo.InvariantCulture))
@@ -1361,23 +1431,22 @@ namespace AutoCAD_BoardSorter
             int row = 2;
             foreach (BoardGroup group in groups)
             {
-                sb.Append("<row r=\"").Append(row.ToString(CultureInfo.InvariantCulture)).Append("\" ht=\"170\" customHeight=\"1\">");
-                AppendNumberCell(sb, 1, row, group.Number);
-                AppendInlineCell(sb, 2, row, group.Layer, 0);
-                AppendNumberCell(sb, 3, row, group.Quantity);
-                AppendNumberCell(sb, 4, row, group.ThicknessMm);
-                AppendNumberCell(sb, 5, row, group.LengthMm);
-                AppendNumberCell(sb, 6, row, group.WidthMm);
-                AppendInlineCell(sb, 7, row, group.RotateLengthWidth ? "Да" : "Нет", 0);
-                AppendInlineCell(sb, 8, row, CoatingNumberText(Slot(group.Coatings, "P1"), coatingNumbers), 0);
-                AppendInlineCell(sb, 9, row, CoatingNumberText(Slot(group.Coatings, "P2"), coatingNumbers), 0);
-                AppendInlineCell(sb, 10, row, EdgeCoatingNumberText(Slot(group.Coatings, "L1"), coatingNumbers), 0);
-                AppendInlineCell(sb, 11, row, EdgeCoatingNumberText(Slot(group.Coatings, "L2"), coatingNumbers), 0);
-                AppendInlineCell(sb, 12, row, EdgeCoatingNumberText(Slot(group.Coatings, "W1"), coatingNumbers), 0);
-                AppendInlineCell(sb, 13, row, EdgeCoatingNumberText(Slot(group.Coatings, "W2"), coatingNumbers), 0);
-                AppendInlineCell(sb, 14, row, BuildTextSketch(group, coatingNumbers), 0);
-                AppendInlineCell(sb, 15, row, group.Handles, 0);
-                AppendInlineCell(sb, 16, row, group.Method, 0);
+                sb.Append("<row r=\"").Append(row.ToString(CultureInfo.InvariantCulture)).Append("\" ht=\"98\" customHeight=\"1\">");
+                AppendInlineCell(sb, 1, row, assemblyNumber, 0);
+                AppendNumberCell(sb, 2, row, group.Number);
+                AppendInlineCell(sb, 3, row, DisplayPartName(group), 0);
+                AppendInlineCell(sb, 4, row, DisplayMaterial(group), 0);
+                AppendNumberCell(sb, 5, row, DisplayLength(group));
+                AppendNumberCell(sb, 6, row, DisplayWidth(group));
+                AppendNumberCell(sb, 7, row, group.ThicknessMm);
+                AppendNumberCell(sb, 8, row, group.Quantity);
+                AppendInlineCell(sb, 9, row, CoatingNumberText(Slot(group.Coatings, "P1"), coatingNumbers), 0);
+                AppendInlineCell(sb, 10, row, CoatingNumberText(Slot(group.Coatings, "P2"), coatingNumbers), 0);
+                AppendInlineCell(sb, 11, row, EdgeCoatingNumberText(Slot(group.Coatings, "L1"), coatingNumbers), 0);
+                AppendInlineCell(sb, 12, row, EdgeCoatingNumberText(Slot(group.Coatings, "L2"), coatingNumbers), 0);
+                AppendInlineCell(sb, 13, row, EdgeCoatingNumberText(Slot(group.Coatings, "W1"), coatingNumbers), 0);
+                AppendInlineCell(sb, 14, row, EdgeCoatingNumberText(Slot(group.Coatings, "W2"), coatingNumbers), 0);
+                AppendInlineCell(sb, 15, row, BuildGeneratedNote(group).Replace("; ", "\n"), 2);
                 sb.Append("</row>");
                 row++;
             }
@@ -1396,7 +1465,11 @@ namespace AutoCAD_BoardSorter
                 row++;
             }
 
+            row++;
+            AppendSummarySection(sb, ref row, 1, "Итоги по материалам", BuildMaterialSummaryLines(groups));
+            AppendSummarySection(sb, ref row, 1, "Итоги по кромке", BuildEdgeSummaryLines(groups));
             sb.Append("</sheetData>");
+
             sb.Append("<autoFilter ref=\"A1:P").Append(Math.Max(1, groups.Count + 1).ToString(CultureInfo.InvariantCulture)).Append("\"/>");
             if (groups.Count > 0)
             {
@@ -1441,10 +1514,10 @@ namespace AutoCAD_BoardSorter
                 int rowIndex = i + 1;
                 int imageId = i + 1;
                 sb.Append("<xdr:oneCellAnchor>")
-                    .Append("<xdr:from><xdr:col>13</xdr:col><xdr:colOff>90000</xdr:colOff><xdr:row>")
+                    .Append("<xdr:from><xdr:col>15</xdr:col><xdr:colOff>15000</xdr:colOff><xdr:row>")
                     .Append(rowIndex.ToString(CultureInfo.InvariantCulture))
-                    .Append("</xdr:row><xdr:rowOff>90000</xdr:rowOff></xdr:from>")
-                    .Append("<xdr:ext cx=\"4572000\" cy=\"2743200\"/>")
+                    .Append("</xdr:row><xdr:rowOff>15000</xdr:rowOff></xdr:from>")
+                    .Append("<xdr:ext cx=\"3200400\" cy=\"1238250\"/>")
                     .Append("<xdr:pic>")
                     .Append("<xdr:nvPicPr><xdr:cNvPr id=\"").Append(imageId.ToString(CultureInfo.InvariantCulture))
                     .Append("\" name=\"Sketch ").Append(imageId.ToString(CultureInfo.InvariantCulture))
@@ -1471,6 +1544,10 @@ namespace AutoCAD_BoardSorter
                 AddCoatingNumber(result, Slot(group.Coatings, "L2"));
                 AddCoatingNumber(result, Slot(group.Coatings, "W1"));
                 AddCoatingNumber(result, Slot(group.Coatings, "W2"));
+                foreach (string item in EnumerateSketchCoatings(group))
+                {
+                    AddCoatingNumber(result, item);
+                }
             }
 
             return result;
@@ -1550,6 +1627,221 @@ namespace AutoCAD_BoardSorter
             return parts.Count == 0 ? string.Empty : string.Join("; ", parts);
         }
 
+        private static string BuildGeneratedNote(BoardGroup group)
+        {
+            List<string> items = BuildEdgeLengthItems(group);
+            return items.Count == 0 ? string.Empty : string.Join("; ", items);
+        }
+
+        private static IEnumerable<string> EnumerateSketchCoatings(BoardGroup group)
+        {
+            if (group == null || group.Sketch == null)
+            {
+                yield break;
+            }
+
+            foreach (BoardSketchEdge edge in group.Sketch.Edges)
+            {
+                foreach (string coating in SplitCoatings(edge.Coating))
+                {
+                    yield return coating;
+                }
+            }
+        }
+
+        private static List<string> BuildEdgeLengthItems(BoardGroup group)
+        {
+            var totals = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            foreach (KeyValuePair<string, double> pair in BuildEdgeLengthTotals(group))
+            {
+                string label = pair.Key + " (" + Format(group.ThicknessMm) + " мм)";
+                totals[label] = pair.Value;
+            }
+
+            return totals
+                .OrderByDescending(x => x.Value)
+                .Select(x => x.Key + ": " + Format(x.Value) + " мм")
+                .ToList();
+        }
+
+        private static Dictionary<string, double> BuildEdgeLengthTotals(BoardGroup group)
+        {
+            var result = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            if (group == null || group.Sketch == null)
+            {
+                return result;
+            }
+
+            foreach (BoardSketchEdge edge in group.Sketch.Edges)
+            {
+                if (edge.StartIndex < 0 || edge.StartIndex >= group.Sketch.Points.Count || edge.EndIndex < 0 || edge.EndIndex >= group.Sketch.Points.Count)
+                {
+                    continue;
+                }
+
+                string coating = FirstCoating(edge.Coating);
+                if (string.IsNullOrWhiteSpace(coating))
+                {
+                    continue;
+                }
+
+                BoardSketchPoint a = group.Sketch.Points[edge.StartIndex];
+                BoardSketchPoint b = group.Sketch.Points[edge.EndIndex];
+                double length = Math.Sqrt(Math.Pow(b.X - a.X, 2.0) + Math.Pow(b.Y - a.Y, 2.0));
+                if (length <= 0.01)
+                {
+                    continue;
+                }
+
+                if (result.ContainsKey(coating))
+                {
+                    result[coating] += length;
+                }
+                else
+                {
+                    result.Add(coating, length);
+                }
+            }
+
+            return result;
+        }
+
+        private static string FirstCoating(string coating)
+        {
+            return SplitCoatings(coating).FirstOrDefault() ?? string.Empty;
+        }
+
+        private static void PrintMaterialSummary(Editor ed, IList<BoardGroup> groups)
+        {
+            List<string> lines = BuildMaterialSummaryLines(groups);
+            if (lines.Count == 0)
+            {
+                return;
+            }
+
+            ed.WriteMessage("\nИтоги по материалам:");
+            foreach (string line in lines)
+            {
+                ed.WriteMessage("\n  {0}", line);
+            }
+        }
+
+        private static void PrintEdgeSummary(Editor ed, IList<BoardGroup> groups)
+        {
+            List<string> lines = BuildEdgeSummaryLines(groups);
+            if (lines.Count == 0)
+            {
+                return;
+            }
+
+            ed.WriteMessage("\nИтоги по кромке:");
+            foreach (string line in lines)
+            {
+                ed.WriteMessage("\n  {0}", line);
+            }
+        }
+
+        private static List<string> BuildMaterialSummaryLines(IList<BoardGroup> groups)
+        {
+            var square = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            var linear = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            var volume = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+
+            foreach (BoardGroup group in groups)
+            {
+                string material = DefaultMaterial(group);
+                string kind = ClassifyGroupMaterialKind(group);
+                double qty = group.Quantity;
+                if (kind == "Погонный")
+                {
+                    AddToSummary(linear, material, group.LengthMm * qty / 1000.0);
+                }
+                else if (kind == "Объемный")
+                {
+                    AddToSummary(volume, material, group.LengthMm * group.WidthMm * group.ThicknessMm * qty / 1000000000.0);
+                }
+                else
+                {
+                    AddToSummary(square, material, group.LengthMm * group.WidthMm * qty / 1000000.0);
+                }
+            }
+
+            var result = new List<string>();
+            result.AddRange(square.OrderBy(x => x.Key).Select(x => x.Key + ": " + Format(x.Value) + " м2"));
+            result.AddRange(linear.OrderBy(x => x.Key).Select(x => x.Key + ": " + Format(x.Value) + " пог. м"));
+            result.AddRange(volume.OrderBy(x => x.Key).Select(x => x.Key + ": " + Format(x.Value) + " м3"));
+            return result;
+        }
+
+        private static List<string> BuildEdgeSummaryLines(IList<BoardGroup> groups)
+        {
+            var totals = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            foreach (BoardGroup group in groups)
+            {
+                foreach (KeyValuePair<string, double> pair in BuildEdgeLengthTotals(group))
+                {
+                    string key = pair.Key + " (" + Format(group.ThicknessMm) + " мм)";
+                    AddToSummary(totals, key, pair.Value * group.Quantity / 1000.0);
+                }
+            }
+
+            return totals.OrderBy(x => x.Key).Select(x => x.Key + ": " + Format(x.Value) + " пог. м").ToList();
+        }
+
+        private static void AddToSummary(IDictionary<string, double> totals, string key, double value)
+        {
+            if (string.IsNullOrWhiteSpace(key) || value <= 0.0)
+            {
+                return;
+            }
+
+            if (totals.ContainsKey(key))
+            {
+                totals[key] += value;
+            }
+            else
+            {
+                totals.Add(key, value);
+            }
+        }
+
+        private static string ClassifyGroupMaterialKind(BoardGroup group)
+        {
+            double dimsOverThickness = Math.Max(group.LengthMm, group.WidthMm) / Math.Max(group.ThicknessMm, 1.0);
+            if (group.WidthMm <= group.ThicknessMm * 2.0 || group.LengthMm <= group.ThicknessMm * 2.0)
+            {
+                return "Погонный";
+            }
+
+            if (dimsOverThickness < 4.0)
+            {
+                return "Объемный";
+            }
+
+            return "Площадной";
+        }
+
+        private static void AppendSummarySection(StringBuilder sb, ref int row, int column, string title, IList<string> lines)
+        {
+            if (lines == null || lines.Count == 0)
+            {
+                return;
+            }
+
+            sb.Append("<row r=\"").Append(row.ToString(CultureInfo.InvariantCulture)).Append("\">");
+            AppendInlineCell(sb, column, row, title, 1);
+            sb.Append("</row>");
+            row++;
+
+            foreach (string line in lines)
+            {
+                sb.Append("<row r=\"").Append(row.ToString(CultureInfo.InvariantCulture)).Append("\">");
+                AppendInlineCell(sb, column, row, line, 0);
+                sb.Append("</row>");
+                row++;
+            }
+        }
+
         private static string BuildSketchSvg(BoardGroup group, Dictionary<string, int> coatingNumbers)
         {
             if (group.Sketch != null && group.Sketch.HasGeometry)
@@ -1564,50 +1856,51 @@ namespace AutoCAD_BoardSorter
             string p1 = CoatingNumberText(Slot(group.Coatings, "P1"), coatingNumbers);
             string p2 = CoatingNumberText(Slot(group.Coatings, "P2"), coatingNumbers);
 
-            string center = string.Join(" / ", new[] { p1, p2 }.Where(x => !string.IsNullOrWhiteSpace(x)));
-            if (string.IsNullOrWhiteSpace(center))
-            {
-                center = group.LengthMm.ToString("0.#", CultureInfo.InvariantCulture) + " x " + group.WidthMm.ToString("0.#", CultureInfo.InvariantCulture);
-            }
-            else
-            {
-                center = "P: " + center;
-            }
+            string center = DisplayLength(group).ToString("0.#", CultureInfo.InvariantCulture) + " x " + DisplayWidth(group).ToString("0.#", CultureInfo.InvariantCulture);
+            string faceText = string.Join(" / ", new[] { p1, p2 }.Where(x => !string.IsNullOrWhiteSpace(x)));
 
-            const double canvasW = 420.0;
-            const double canvasH = 252.0;
-            const double marginX = 46.0;
-            const double marginY = 42.0;
-            double length = Math.Max(1.0, group.LengthMm);
-            double width = Math.Max(1.0, group.WidthMm);
+            const double canvasW = 336.0;
+            const double canvasH = 130.0;
+            const double marginX = 24.0;
+            const double marginTop = 42.0;
+            const double marginBottom = 8.0;
+            double length = Math.Max(1.0, DisplayLength(group));
+            double width = Math.Max(1.0, DisplayWidth(group));
             double scaleX = (canvasW - marginX * 2.0) / length;
-            double scaleY = (canvasH - marginY * 2.0) / width;
+            double scaleY = (canvasH - marginTop - marginBottom) / width;
             double scale = Math.Min(scaleX, scaleY);
             double rectW = Math.Max(64.0, length * scale);
-            double rectH = Math.Max(42.0, width * scale);
+            double rectH = Math.Max(18.0, width * scale);
             double x = (canvasW - rectW) / 2.0;
-            double y = (canvasH - rectH) / 2.0;
+            double y = marginTop + ((canvasH - marginTop - marginBottom) - rectH) / 2.0;
             double right = x + rectW;
             double bottom = y + rectH;
 
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-            sb.Append("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"420\" height=\"252\" viewBox=\"0 0 420 252\">");
-            sb.Append("<rect width=\"420\" height=\"252\" fill=\"#ffffff\"/>");
+            sb.Append("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"336\" height=\"130\" viewBox=\"0 0 336 130\">");
+            sb.Append("<rect width=\"336\" height=\"130\" fill=\"#ffffff\"/>");
             sb.Append("<rect x=\"").Append(SvgNumber(x)).Append("\" y=\"").Append(SvgNumber(y))
                 .Append("\" width=\"").Append(SvgNumber(rectW)).Append("\" height=\"").Append(SvgNumber(rectH))
                 .Append("\" fill=\"#f8fafc\" stroke=\"#334155\" stroke-width=\"2\"/>");
 
-            AppendEdgeLine(sb, x, y, right, y, l1, (x + right) / 2.0, y + 18.0);
-            AppendEdgeLine(sb, x, bottom, right, bottom, l2, (x + right) / 2.0, bottom - 18.0);
-            AppendEdgeLine(sb, right, y, right, bottom, w1, right - 18.0, (y + bottom) / 2.0);
-            AppendEdgeLine(sb, x, y, x, bottom, w2, x + 18.0, (y + bottom) / 2.0);
+            HashSet<int> labeledEdgeIndexes = FindLongestRectLabelEdges(length, width, l1, l2, w1, w2);
+            AppendEdgeLine(sb, x, y, right, y, l1, (x + right) / 2.0, y - 5.0, labeledEdgeIndexes.Contains(0));
+            AppendEdgeLine(sb, x, bottom, right, bottom, l2, (x + right) / 2.0, bottom + 5.0, labeledEdgeIndexes.Contains(1));
+            AppendEdgeLine(sb, right, y, right, bottom, w1, right + 5.0, (y + bottom) / 2.0, labeledEdgeIndexes.Contains(2));
+            AppendEdgeLine(sb, x, y, x, bottom, w2, x - 5.0, (y + bottom) / 2.0, labeledEdgeIndexes.Contains(3));
 
-            sb.Append("<text x=\"210\" y=\"122\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"18\" font-weight=\"700\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#111827\">")
+            sb.Append("<text x=\"168\" y=\"16\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"18\" font-weight=\"700\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#111827\">")
                 .Append(EscapeXml(center)).Append("</text>");
-            sb.Append("<text x=\"210\" y=\"144\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"12\" text-anchor=\"middle\" fill=\"#64748b\">")
+            sb.Append("<text x=\"168\" y=\"31\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"12\" text-anchor=\"middle\" fill=\"#64748b\">")
                 .Append(EscapeXml(group.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " мм"))
                 .Append("</text>");
+            if (!string.IsNullOrWhiteSpace(faceText))
+            {
+                sb.Append("<text x=\"168\" y=\"65\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"11\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#475569\">")
+                    .Append(EscapeXml("Пласть: " + faceText))
+                    .Append("</text>");
+            }
             sb.Append("</svg>");
             return sb.ToString();
         }
@@ -1616,15 +1909,14 @@ namespace AutoCAD_BoardSorter
         {
             string p1 = CoatingNumberText(Slot(group.Coatings, "P1"), coatingNumbers);
             string p2 = CoatingNumberText(Slot(group.Coatings, "P2"), coatingNumbers);
-            string center = string.Join(" / ", new[] { p1, p2 }.Where(x => !string.IsNullOrWhiteSpace(x)));
-            center = string.IsNullOrWhiteSpace(center)
-                ? group.LengthMm.ToString("0.#", CultureInfo.InvariantCulture) + " x " + group.WidthMm.ToString("0.#", CultureInfo.InvariantCulture)
-                : "P: " + center;
+            string center = DisplayLength(group).ToString("0.#", CultureInfo.InvariantCulture) + " x " + DisplayWidth(group).ToString("0.#", CultureInfo.InvariantCulture);
+            string faceText = string.Join(" / ", new[] { p1, p2 }.Where(x => !string.IsNullOrWhiteSpace(x)));
 
-            const double canvasW = 420.0;
-            const double canvasH = 252.0;
-            const double marginX = 46.0;
-            const double marginY = 42.0;
+            const double canvasW = 336.0;
+            const double canvasH = 130.0;
+            const double marginX = 24.0;
+            const double marginTop = 42.0;
+            const double marginBottom = 8.0;
             List<BoardSketchPoint> normalized = NormalizeSketchOrientation(group.Sketch);
             double minX = normalized.Min(x => x.X);
             double maxX = normalized.Max(x => x.X);
@@ -1632,11 +1924,11 @@ namespace AutoCAD_BoardSorter
             double maxY = normalized.Max(x => x.Y);
             double spanX = Math.Max(1.0, maxX - minX);
             double spanY = Math.Max(1.0, maxY - minY);
-            double scale = Math.Min((canvasW - marginX * 2.0) / spanX, (canvasH - marginY * 2.0) / spanY);
+            double scale = Math.Min((canvasW - marginX * 2.0) / spanX, (canvasH - marginTop - marginBottom) / spanY);
             double drawingW = spanX * scale;
             double drawingH = spanY * scale;
             double offsetX = (canvasW - drawingW) / 2.0;
-            double offsetY = (canvasH - drawingH) / 2.0;
+            double offsetY = marginTop + ((canvasH - marginTop - marginBottom) - drawingH) / 2.0;
 
             var projected = normalized
                 .Select(point => new BoardSketchPoint
@@ -1648,8 +1940,11 @@ namespace AutoCAD_BoardSorter
 
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-            sb.Append("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"420\" height=\"252\" viewBox=\"0 0 420 252\">");
-            sb.Append("<rect width=\"420\" height=\"252\" fill=\"#ffffff\"/>");
+            sb.Append("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"336\" height=\"130\" viewBox=\"0 0 336 130\">");
+            sb.Append("<rect width=\"336\" height=\"130\" fill=\"#ffffff\"/>");
+
+            HashSet<int> labeledEdgeIndexes = FindLongestLabeledEdges(group.Sketch, projected, coatingNumbers);
+            int edgeIndex = 0;
 
             foreach (BoardSketchEdge edge in group.Sketch.Edges)
             {
@@ -1661,16 +1956,120 @@ namespace AutoCAD_BoardSorter
                 BoardSketchPoint a = projected[edge.StartIndex];
                 BoardSketchPoint b = projected[edge.EndIndex];
                 string number = EdgeCoatingNumberText(edge.Coating, coatingNumbers);
-                AppendEdgeLine(sb, a.X, a.Y, b.X, b.Y, number, (a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0, edge.ShowLabel);
+                if (edge.IsArc && edge.ArcRadius > 0.0)
+                {
+                    AppendEdgeArc(sb, a.X, a.Y, b.X, b.Y, edge.ArcRadius * scale, edge.ArcLarge, !edge.ArcSweep, number, (a.X + b.X) / 2.0, Math.Min(a.Y, b.Y) - 5.0, labeledEdgeIndexes.Contains(edgeIndex) && !string.IsNullOrWhiteSpace(number));
+                }
+                else
+                {
+                    AppendEdgeLine(sb, a.X, a.Y, b.X, b.Y, number, (a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0, labeledEdgeIndexes.Contains(edgeIndex) && !string.IsNullOrWhiteSpace(number));
+                }
+
+                edgeIndex++;
             }
 
-            sb.Append("<text x=\"210\" y=\"122\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"18\" font-weight=\"700\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#111827\">")
+            sb.Append("<text x=\"168\" y=\"16\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"18\" font-weight=\"700\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#111827\">")
                 .Append(EscapeXml(center)).Append("</text>");
-            sb.Append("<text x=\"210\" y=\"144\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"12\" text-anchor=\"middle\" fill=\"#64748b\">")
+            sb.Append("<text x=\"168\" y=\"31\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"12\" text-anchor=\"middle\" fill=\"#64748b\">")
                 .Append(EscapeXml(group.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " мм"))
                 .Append("</text>");
+            if (!string.IsNullOrWhiteSpace(faceText))
+            {
+                sb.Append("<text x=\"168\" y=\"65\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"11\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"#475569\">")
+                    .Append(EscapeXml("Пласть: " + faceText))
+                    .Append("</text>");
+            }
             sb.Append("</svg>");
             return sb.ToString();
+        }
+
+        private static HashSet<int> FindLongestRectLabelEdges(double length, double width, string l1, string l2, string w1, string w2)
+        {
+            var bestIndexes = new Dictionary<string, int>(StringComparer.CurrentCultureIgnoreCase);
+            var bestLengths = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            var bestRanks = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+
+            TrySetBestRectLabelEdge(bestIndexes, bestLengths, bestRanks, l1, 0, length, 0.0);
+            TrySetBestRectLabelEdge(bestIndexes, bestLengths, bestRanks, l2, 1, length, 1.0);
+            TrySetBestRectLabelEdge(bestIndexes, bestLengths, bestRanks, w1, 2, width, 2.0);
+            TrySetBestRectLabelEdge(bestIndexes, bestLengths, bestRanks, w2, 3, width, 3.0);
+
+            return new HashSet<int>(bestIndexes.Values);
+        }
+
+        private static void TrySetBestRectLabelEdge(
+            IDictionary<string, int> bestIndexes,
+            IDictionary<string, double> bestLengths,
+            IDictionary<string, double> bestRanks,
+            string coatingNumber,
+            int edgeIndex,
+            double edgeLength,
+            double rank)
+        {
+            if (string.IsNullOrWhiteSpace(coatingNumber))
+            {
+                return;
+            }
+
+            double knownLength;
+            double knownRank;
+            bool hasKnownLength = bestLengths.TryGetValue(coatingNumber, out knownLength);
+            bool hasKnownRank = bestRanks.TryGetValue(coatingNumber, out knownRank);
+            if (!hasKnownLength
+                || edgeLength > knownLength + 0.01
+                || (Math.Abs(edgeLength - knownLength) < 0.01 && (!hasKnownRank || rank < knownRank)))
+            {
+                bestIndexes[coatingNumber] = edgeIndex;
+                bestLengths[coatingNumber] = edgeLength;
+                bestRanks[coatingNumber] = rank;
+            }
+        }
+
+        private static HashSet<int> FindLongestLabeledEdges(BoardSketch sketch, IList<BoardSketchPoint> points, Dictionary<string, int> coatingNumbers)
+        {
+            var result = new HashSet<int>();
+            if (sketch == null || points == null)
+            {
+                return result;
+            }
+
+            var bestIndexes = new Dictionary<string, int>(StringComparer.CurrentCultureIgnoreCase);
+            var bestLengths = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+            var bestTops = new Dictionary<string, double>(StringComparer.CurrentCultureIgnoreCase);
+
+            for (int i = 0; i < sketch.Edges.Count; i++)
+            {
+                BoardSketchEdge edge = sketch.Edges[i];
+                string coatingNumber = EdgeCoatingNumberText(edge.Coating, coatingNumbers);
+                if (string.IsNullOrWhiteSpace(coatingNumber)
+                    || edge.StartIndex < 0 || edge.StartIndex >= points.Count
+                    || edge.EndIndex < 0 || edge.EndIndex >= points.Count)
+                {
+                    continue;
+                }
+
+                BoardSketchPoint a = points[edge.StartIndex];
+                BoardSketchPoint b = points[edge.EndIndex];
+                double length = Math.Sqrt(Math.Pow(b.X - a.X, 2.0) + Math.Pow(b.Y - a.Y, 2.0));
+                double top = Math.Min(a.Y, b.Y);
+                double knownLength;
+                double knownTop;
+                if (!bestLengths.TryGetValue(coatingNumber, out knownLength)
+                    || length > knownLength + 0.01
+                    || (Math.Abs(length - knownLength) < 0.01 && (!bestTops.TryGetValue(coatingNumber, out knownTop) || top < knownTop)))
+                {
+                    bestIndexes[coatingNumber] = i;
+                    bestLengths[coatingNumber] = length;
+                    bestTops[coatingNumber] = top;
+                }
+            }
+
+            foreach (int index in bestIndexes.Values)
+            {
+                result.Add(index);
+            }
+
+            return result;
         }
 
         private static List<BoardSketchPoint> NormalizeSketchOrientation(BoardSketch sketch)
@@ -1745,16 +2144,49 @@ namespace AutoCAD_BoardSorter
             string color = ColorForCoatingNumberText(coatingNumber);
             sb.Append("<line x1=\"").Append(SvgNumber(x1)).Append("\" y1=\"").Append(SvgNumber(y1))
                 .Append("\" x2=\"").Append(SvgNumber(x2)).Append("\" y2=\"").Append(SvgNumber(y2))
-                .Append("\" stroke=\"").Append(color).Append("\" stroke-width=\"6\" stroke-linecap=\"round\"/>");
+                .Append("\" stroke=\"").Append(color).Append("\" stroke-width=\"4\" stroke-linecap=\"round\"/>");
             if (!showLabel)
             {
                 return;
             }
 
+            AppendEdgeMarker(sb, coatingNumber, color, textX, textY);
+        }
+
+        private static void AppendEdgeArc(StringBuilder sb, double x1, double y1, double x2, double y2, double radius, bool largeArc, bool sweep, string coatingNumber, double textX, double textY, bool showLabel)
+        {
+            double r = Math.Max(1.0, radius);
+            string arcPath = "M " + SvgNumber(x1) + " " + SvgNumber(y1)
+                + " A " + SvgNumber(r) + " " + SvgNumber(r)
+                + " 0 " + (largeArc ? "1" : "0")
+                + " " + (sweep ? "1" : "0")
+                + " " + SvgNumber(x2) + " " + SvgNumber(y2);
+
+            if (string.IsNullOrWhiteSpace(coatingNumber))
+            {
+                sb.Append("<path d=\"").Append(arcPath)
+                    .Append("\" fill=\"none\" stroke=\"#94a3b8\" stroke-width=\"1\"/>");
+                return;
+            }
+
+            string color = ColorForCoatingNumberText(coatingNumber);
+            sb.Append("<path d=\"").Append(arcPath)
+                .Append("\" fill=\"none\" stroke=\"").Append(color)
+                .Append("\" stroke-width=\"4\" stroke-linecap=\"round\"/>");
+            if (!showLabel)
+            {
+                return;
+            }
+
+            AppendEdgeMarker(sb, coatingNumber, color, textX, textY);
+        }
+
+        private static void AppendEdgeMarker(StringBuilder sb, string coatingNumber, string color, double textX, double textY)
+        {
             sb.Append("<circle cx=\"").Append(SvgNumber(textX)).Append("\" cy=\"").Append(SvgNumber(textY))
-                .Append("\" r=\"13\" fill=\"").Append(color).Append("\"/>");
+                .Append("\" r=\"10\" fill=\"").Append(color).Append("\"/>");
             sb.Append("<text x=\"").Append(SvgNumber(textX)).Append("\" y=\"").Append(SvgNumber(textY))
-                .Append("\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"14\" font-weight=\"700\" text-anchor=\"middle\" dominant-baseline=\"central\" fill=\"#ffffff\">")
+                .Append("\" dy=\"0.35em\" font-family=\"Segoe UI, Arial, sans-serif\" font-size=\"11\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#ffffff\">")
                 .Append(EscapeXml(coatingNumber)).Append("</text>");
         }
 

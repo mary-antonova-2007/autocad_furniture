@@ -4,6 +4,14 @@
       "commandName": "Executable",
       "executablePath": "C:\\Program Files\\Autodesk\\AutoCAD 2025\\acad.exe",
       "workingDirectory": "C:\\Program Files\\Autodesk\\AutoCAD 2025"
+    },
+    "AutoCAD 2022": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Autodesk\\AutoCAD 2022\\acad.exe",
+      "workingDirectory": "C:\\Program Files\\Autodesk\\AutoCAD 2022",
+      "environmentVariables": {
+        "ACAD": "C:\\Program Files\\Autodesk\\AutoCAD 2022"
+      }
     }
   }
 }

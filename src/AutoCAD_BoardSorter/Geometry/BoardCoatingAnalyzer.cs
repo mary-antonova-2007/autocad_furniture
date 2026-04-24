@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -39,6 +40,10 @@ namespace AutoCAD_BoardSorter.Geometry
         {
             public string Key;
             public readonly List<Point3d> Points = new List<Point3d>();
+            public bool IsArc;
+            public double ArcRadius;
+            public bool ArcLarge;
+            public bool ArcSweep;
         }
 
         public BoardCoatingSlots Analyze(Solid3d solid, Transaction tr, SpecificationData specification)
@@ -65,11 +70,11 @@ namespace AutoCAD_BoardSorter.Geometry
             }
 
             List<Point3d> vertices = GetVertices(solid);
-            List<FaceRecord> faces = GetPlanarFaces(solid);
+            List<FaceRecord> faces = GetFaces(solid);
             if (log != null)
             {
                 log.Info("  brep vertices=" + vertices.Count.ToString(CultureInfo.InvariantCulture)
-                    + " planarFaces=" + faces.Count.ToString(CultureInfo.InvariantCulture));
+                    + " faces=" + faces.Count.ToString(CultureInfo.InvariantCulture));
                 foreach (FaceRecord face in faces)
                 {
                     log.Info("  face key=" + face.Key + " aliases=" + string.Join(",", face.Keys));
@@ -110,7 +115,14 @@ namespace AutoCAD_BoardSorter.Geometry
                     continue;
                 }
 
-                ApplySlot(slots, axes, face.Normal, pair.Value, specification != null && specification.RotateLengthWidth);
+                if (face.Normal.Length > VectorMath.Eps)
+                {
+                    ApplySlot(slots, axes, face.Normal, pair.Value, specification != null && specification.RotateLengthWidth);
+                }
+                else
+                {
+                    ApplySlotFromFaceCenter(slots, axes, vertices, face.Center, pair.Value, specification != null && specification.RotateLengthWidth);
+                }
                 if (log != null) log.Info("  applied key=" + pair.Key + " normal=" + FormatVector(face.Normal) + " value=\"" + pair.Value + "\"");
             }
 
@@ -128,25 +140,19 @@ namespace AutoCAD_BoardSorter.Geometry
         {
             Dictionary<string, string> coatings = FaceCoatingStorage.ReadFaceCoatings(solid, tr);
             var sketch = new BoardSketch();
-            List<Point3d> vertices = GetVertices(solid);
-            List<FaceRecord> faces = GetPlanarFaces(solid);
-            if (vertices.Count < 4 || faces.Count == 0)
-            {
-                return sketch;
-            }
-
-            BoardAxes axes;
-            if (!TryBuildAxes(solid, vertices, faces, out axes))
+            List<FaceRecord> faces = GetFaces(solid);
+            if (faces.Count == 0)
             {
                 return sketch;
             }
 
             FaceRecord plateFace = faces
-                .Where(x => Math.Abs(VectorMath.Normalize(x.Normal).DotProduct(axes.ThicknessAxis)) >= DirectionTolerance)
+                .Where(x => x.Normal.Length > VectorMath.Eps)
                 .OrderByDescending(x => x.Area)
                 .FirstOrDefault();
             if (plateFace == null)
             {
+                if (log != null) log.Info("  sketch skipped: plate face not found");
                 return sketch;
             }
 
@@ -161,6 +167,7 @@ namespace AutoCAD_BoardSorter.Geometry
                     }
 
                     var edgeRecords = new List<EdgeRecord>();
+                    var sampledPoints = new List<Point3d>();
                     foreach (BoundaryLoop loop in face.Loops)
                     {
                         if (loop == null || loop.IsNull)
@@ -178,11 +185,36 @@ namespace AutoCAD_BoardSorter.Geometry
 
                             EdgeRecord record = new EdgeRecord { Key = edgeKey };
                             record.Points.AddRange(GetEdgeSamplePoints(edge));
+                            if (log != null)
+                            {
+                                string curveType = "<unknown>";
+                                try
+                                {
+                                    curveType = edge.Curve == null ? "<null>" : edge.Curve.GetType().FullName;
+                                }
+                                catch
+                                {
+                                }
+
+                                log.Info("  sketch edge key=" + edgeKey
+                                    + " curve=" + curveType
+                                    + " samples=" + record.Points.Count.ToString(CultureInfo.InvariantCulture)
+                                    + " coating=\"" + FindCoatingForEdge(edgeKey, faces, plateFace, coatings) + "\"");
+                            }
+
                             if (record.Points.Count >= 2)
                             {
                                 edgeRecords.Add(record);
+                                sampledPoints.AddRange(record.Points);
                             }
                         }
+                    }
+
+                    BoardAxes axes;
+                    if (!TryBuildFaceSketchAxes(plateFace.Normal, sampledPoints, out axes))
+                    {
+                        if (log != null) log.Info("  sketch skipped: face axes not built");
+                        return sketch;
                     }
 
                     BuildSketchFromEdges(sketch, edgeRecords, faces, plateFace, coatings, axes);
@@ -258,6 +290,58 @@ namespace AutoCAD_BoardSorter.Geometry
             }
         }
 
+        private static void ApplySlotFromFaceCenter(BoardCoatingSlots slots, BoardAxes axes, IEnumerable<Point3d> vertices, Point3d center, string coating, bool rotate)
+        {
+            Point3d solidCenter = CenterOf(vertices);
+            Vector3d offset = center - solidCenter;
+            double l = offset.DotProduct(axes.LengthAxis);
+            double w = offset.DotProduct(axes.WidthAxis);
+
+            if (Math.Abs(w) >= Math.Abs(l))
+            {
+                if (!rotate)
+                {
+                    if (w >= 0.0) slots.L1 = MergeCoating(slots.L1, coating);
+                    else slots.L2 = MergeCoating(slots.L2, coating);
+                }
+                else
+                {
+                    if (w >= 0.0) slots.W1 = MergeCoating(slots.W1, coating);
+                    else slots.W2 = MergeCoating(slots.W2, coating);
+                }
+            }
+            else
+            {
+                if (!rotate)
+                {
+                    if (l >= 0.0) slots.W1 = MergeCoating(slots.W1, coating);
+                    else slots.W2 = MergeCoating(slots.W2, coating);
+                }
+                else
+                {
+                    if (l >= 0.0) slots.L1 = MergeCoating(slots.L1, coating);
+                    else slots.L2 = MergeCoating(slots.L2, coating);
+                }
+            }
+        }
+
+        private static Point3d CenterOf(IEnumerable<Point3d> points)
+        {
+            double x = 0.0;
+            double y = 0.0;
+            double z = 0.0;
+            int count = 0;
+            foreach (Point3d point in points)
+            {
+                x += point.X;
+                y += point.Y;
+                z += point.Z;
+                count++;
+            }
+
+            return count == 0 ? Point3d.Origin : new Point3d(x / count, y / count, z / count);
+        }
+
         private static string MergeCoating(string existing, string coating)
         {
             if (string.IsNullOrWhiteSpace(existing))
@@ -294,7 +378,7 @@ namespace AutoCAD_BoardSorter.Geometry
         private static bool TryBuildAxes(Solid3d solid, List<Point3d> vertices, List<FaceRecord> faces, out BoardAxes axes)
         {
             axes = null;
-            FaceRecord largest = faces.OrderByDescending(x => x.Area).FirstOrDefault();
+            FaceRecord largest = faces.Where(x => x.Normal.Length > VectorMath.Eps).OrderByDescending(x => x.Area).FirstOrDefault();
             if (largest == null || largest.Normal.Length <= VectorMath.Eps)
             {
                 return false;
@@ -390,6 +474,61 @@ namespace AutoCAD_BoardSorter.Geometry
             directions.Add(direction);
         }
 
+        private static bool TryBuildFaceSketchAxes(Vector3d faceNormal, IList<Point3d> points, out BoardAxes axes)
+        {
+            axes = null;
+            if (faceNormal.Length <= VectorMath.Eps || points == null || points.Count < 2)
+            {
+                return false;
+            }
+
+            Vector3d normal = VectorMath.Normalize(faceNormal);
+            Vector3d lengthAxis = Vector3d.XAxis;
+            double best = -1.0;
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                for (int j = i + 1; j < points.Count; j++)
+                {
+                    Vector3d direction = points[j] - points[i];
+                    direction = direction - normal.MultiplyBy(direction.DotProduct(normal));
+                    double length = direction.Length;
+                    if (length <= VectorMath.Eps)
+                    {
+                        continue;
+                    }
+
+                    if (length > best)
+                    {
+                        best = length;
+                        lengthAxis = direction.GetNormal();
+                    }
+                }
+            }
+
+            if (best <= VectorMath.Eps)
+            {
+                return false;
+            }
+
+            Vector3d width = normal.CrossProduct(lengthAxis);
+            if (width.Length <= VectorMath.Eps)
+            {
+                return false;
+            }
+
+            Vector3d widthAxis = width.GetNormal();
+            axes = new BoardAxes
+            {
+                ThicknessAxis = normal,
+                LengthAxis = lengthAxis,
+                WidthAxis = widthAxis,
+                Length = SizeAlong(points, lengthAxis),
+                Width = SizeAlong(points, widthAxis)
+            };
+            return true;
+        }
+
         private static double SizeAlong(IEnumerable<Point3d> vertices, Vector3d axis)
         {
             double min = double.MaxValue;
@@ -433,7 +572,7 @@ namespace AutoCAD_BoardSorter.Geometry
             points.Add(point);
         }
 
-        private static List<FaceRecord> GetPlanarFaces(Solid3d solid)
+        private static List<FaceRecord> GetFaces(Solid3d solid)
         {
             var faces = new List<FaceRecord>();
             using (var brep = new Brep(solid))
@@ -442,22 +581,18 @@ namespace AutoCAD_BoardSorter.Geometry
                 foreach (BrepFace face in brep.Faces)
                 {
                     ordinal++;
-                    Vector3d normal;
-                    if (!TryGetFaceNormal(face, out normal))
-                    {
-                        continue;
-                    }
-
                     string key;
                     if (!FaceKeyBuilder.TryBuild(face, out key))
                     {
                         continue;
                     }
 
+                    Vector3d normal;
+                    bool hasNormal = TryGetFaceNormal(face, out normal);
                     var record = new FaceRecord
                     {
                         Key = key,
-                        Normal = normal,
+                        Normal = hasNormal ? normal : new Vector3d(0.0, 0.0, 0.0),
                         Area = Math.Abs(face.GetArea()),
                         Center = GetFaceCenter(face)
                     };
@@ -510,6 +645,16 @@ namespace AutoCAD_BoardSorter.Geometry
 
             try
             {
+                var arc = edge.Curve as CircularArc3d;
+                if (arc != null)
+                {
+                    key = "C:"
+                        + PointKey(arc.Center)
+                        + ":R" + Quantize(arc.Radius)
+                        + ":N" + Quantize(arc.Normal.X) + "," + Quantize(arc.Normal.Y) + "," + Quantize(arc.Normal.Z);
+                    return true;
+                }
+
                 string a = PointKey(edge.Vertex1.Point);
                 string b = PointKey(edge.Vertex2.Point);
                 key = string.CompareOrdinal(a, b) <= 0 ? a + "|" + b : b + "|" + a;
@@ -559,10 +704,17 @@ namespace AutoCAD_BoardSorter.Geometry
         {
             try
             {
-                var arc = edge.Curve as CircularArc3d;
+                Curve3d curve = edge.Curve;
+                var arc = curve as CircularArc3d;
                 if (arc != null)
                 {
                     return GetCircularArcSamplePoints(edge, arc);
+                }
+
+                IEnumerable<Point3d> sampled;
+                if (TryGetCurveSamplePoints(curve, out sampled))
+                {
+                    return sampled;
                 }
             }
             catch
@@ -572,16 +724,149 @@ namespace AutoCAD_BoardSorter.Geometry
             return new[] { edge.Vertex1.Point, edge.Vertex2.Point };
         }
 
+        private static bool TryGetCurveSamplePoints(Curve3d curve, out IEnumerable<Point3d> points)
+        {
+            points = null;
+            if (curve == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                object interval = curve.GetType().GetMethod("GetInterval", Type.EmptyTypes).Invoke(curve, null);
+                if (interval == null)
+                {
+                    return false;
+                }
+
+                double from = ReadIntervalBound(interval, "LowerBound", "lowerBound", "Start", "start");
+                double to = ReadIntervalBound(interval, "UpperBound", "upperBound", "End", "end");
+                object value = curve.GetType().GetMethod("GetSamplePoints", new[] { typeof(double), typeof(double), typeof(double) })
+                    .Invoke(curve, new object[] { from, to, 1.0 });
+                IEnumerable enumerable = value as IEnumerable;
+                if (enumerable == null)
+                {
+                    return false;
+                }
+
+                var result = new List<Point3d>();
+                foreach (object item in enumerable)
+                {
+                    Point3d point;
+                    if (TryReadPoint(item, out point))
+                    {
+                        result.Add(point);
+                    }
+                }
+
+                if (result.Count < 2)
+                {
+                    return false;
+                }
+
+                points = result;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static double ReadIntervalBound(object interval, params string[] names)
+        {
+            Type type = interval.GetType();
+            foreach (string name in names)
+            {
+                System.Reflection.PropertyInfo property = type.GetProperty(name);
+                if (property != null)
+                {
+                    return Convert.ToDouble(property.GetValue(interval, null), CultureInfo.InvariantCulture);
+                }
+
+                System.Reflection.FieldInfo field = type.GetField(name);
+                if (field != null)
+                {
+                    return Convert.ToDouble(field.GetValue(interval), CultureInfo.InvariantCulture);
+                }
+            }
+
+            return 0.0;
+        }
+
+        private static bool TryReadPoint(object value, out Point3d point)
+        {
+            point = Point3d.Origin;
+            if (value == null)
+            {
+                return false;
+            }
+
+            if (value is Point3d)
+            {
+                point = (Point3d)value;
+                return true;
+            }
+
+            Type type = value.GetType();
+            string[] propertyNames = { "Point", "Value", "Position" };
+            foreach (string propertyName in propertyNames)
+            {
+                System.Reflection.PropertyInfo property = type.GetProperty(propertyName);
+                if (property == null)
+                {
+                    continue;
+                }
+
+                object propertyValue = property.GetValue(value, null);
+                if (propertyValue is Point3d)
+                {
+                    point = (Point3d)propertyValue;
+                    return true;
+                }
+            }
+
+            System.Reflection.MethodInfo method = type.GetMethod("GetPoint", Type.EmptyTypes);
+            if (method != null)
+            {
+                object methodValue = method.Invoke(value, null);
+                if (methodValue is Point3d)
+                {
+                    point = (Point3d)methodValue;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static IEnumerable<Point3d> GetCircularArcSamplePoints(BrepEdge edge, CircularArc3d arc)
         {
-            Point3d vertexStart = edge.Vertex1.Point;
-            Point3d vertexEnd = edge.Vertex2.Point;
+            Point3d vertexStart;
+            Point3d vertexEnd;
             double start = arc.StartAngle;
             double end = arc.EndAngle;
+            try
+            {
+                vertexStart = edge.Vertex1.Point;
+                vertexEnd = edge.Vertex2.Point;
+            }
+            catch
+            {
+                vertexStart = arc.EvaluatePoint(start);
+                vertexEnd = arc.EvaluatePoint(end);
+            }
+
             double sweep = end - start;
-            if (sweep < 0.0)
+            while (sweep < 0.0)
             {
                 sweep += Math.PI * 2.0;
+            }
+
+            if (Math.Abs(sweep) <= 1e-9 || vertexStart.DistanceTo(vertexEnd) <= 0.001)
+            {
+                sweep = Math.PI * 2.0;
             }
 
             int segments = Math.Max(6, Math.Min(48, (int)Math.Ceiling(Math.Abs(sweep) / (Math.PI / 24.0))));

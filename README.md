@@ -18,14 +18,14 @@ What it does:
 
 ## Build
 
-This project targets `.NET 8` because AutoCAD 2025 loads .NET 8 plugins.
+This project targets `.NET Framework 4.8` for AutoCAD 2022.
 
 Set the `ACAD` environment variable to the AutoCAD install folder containing `AcMgd.dll`, `AcDbMgd.dll`, `AcCoreMgd.dll`, and `AcDbMgdBrep.dll`.
 
 Example:
 
 ```bat
-set ACAD=C:\Program Files\Autodesk\AutoCAD 2025
+set ACAD=C:\Program Files\Autodesk\AutoCAD 2022
 build-release.bat
 ```
 
@@ -55,7 +55,7 @@ BDUNREGISTER
 Bundle way:
 
 ```bat
-set ACAD=C:\Program Files\Autodesk\AutoCAD 2025
+set ACAD=C:\Program Files\Autodesk\AutoCAD 2022
 install-bundle.bat
 ```
 

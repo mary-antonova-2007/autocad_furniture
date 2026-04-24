@@ -25,5 +25,9 @@ namespace AutoCAD_BoardSorter.Models
         public int EndIndex { get; set; }
         public string Coating { get; set; }
         public bool ShowLabel { get; set; }
+        public bool IsArc { get; set; }
+        public double ArcRadius { get; set; }
+        public bool ArcLarge { get; set; }
+        public bool ArcSweep { get; set; }
     }
 }

@@ -15,6 +15,8 @@ namespace AutoCAD_BoardSorter.Models
         public string Method { get; set; }
         public string Fingerprint { get; set; }
         public bool RotateLengthWidth { get; set; }
+        public string PartName { get; set; }
+        public string Material { get; set; }
         public BoardCoatingSlots Coatings { get; set; }
         public BoardSketch Sketch { get; set; }
 
