@@ -1625,10 +1625,11 @@ namespace AutoCAD_BoardSorter
             const double canvasH = 252.0;
             const double marginX = 46.0;
             const double marginY = 42.0;
-            double minX = group.Sketch.Points.Min(x => x.X);
-            double maxX = group.Sketch.Points.Max(x => x.X);
-            double minY = group.Sketch.Points.Min(x => x.Y);
-            double maxY = group.Sketch.Points.Max(x => x.Y);
+            List<BoardSketchPoint> normalized = NormalizeSketchOrientation(group.Sketch);
+            double minX = normalized.Min(x => x.X);
+            double maxX = normalized.Max(x => x.X);
+            double minY = normalized.Min(x => x.Y);
+            double maxY = normalized.Max(x => x.Y);
             double spanX = Math.Max(1.0, maxX - minX);
             double spanY = Math.Max(1.0, maxY - minY);
             double scale = Math.Min((canvasW - marginX * 2.0) / spanX, (canvasH - marginY * 2.0) / spanY);
@@ -1637,7 +1638,7 @@ namespace AutoCAD_BoardSorter
             double offsetX = (canvasW - drawingW) / 2.0;
             double offsetY = (canvasH - drawingH) / 2.0;
 
-            var projected = group.Sketch.Points
+            var projected = normalized
                 .Select(point => new BoardSketchPoint
                 {
                     X = offsetX + (point.X - minX) * scale,
@@ -1670,6 +1671,60 @@ namespace AutoCAD_BoardSorter
                 .Append("</text>");
             sb.Append("</svg>");
             return sb.ToString();
+        }
+
+        private static List<BoardSketchPoint> NormalizeSketchOrientation(BoardSketch sketch)
+        {
+            double angle = FindDominantSketchAngle(sketch);
+            List<BoardSketchPoint> rotated = RotateSketchPoints(sketch.Points, -angle);
+            double spanX = rotated.Max(x => x.X) - rotated.Min(x => x.X);
+            double spanY = rotated.Max(x => x.Y) - rotated.Min(x => x.Y);
+            if (spanY > spanX)
+            {
+                rotated = RotateSketchPoints(rotated, -Math.PI / 2.0);
+            }
+
+            return rotated;
+        }
+
+        private static double FindDominantSketchAngle(BoardSketch sketch)
+        {
+            double bestLength = -1.0;
+            double bestAngle = 0.0;
+
+            foreach (BoardSketchEdge edge in sketch.Edges)
+            {
+                if (edge.StartIndex < 0 || edge.StartIndex >= sketch.Points.Count || edge.EndIndex < 0 || edge.EndIndex >= sketch.Points.Count)
+                {
+                    continue;
+                }
+
+                BoardSketchPoint a = sketch.Points[edge.StartIndex];
+                BoardSketchPoint b = sketch.Points[edge.EndIndex];
+                double dx = b.X - a.X;
+                double dy = b.Y - a.Y;
+                double length = Math.Sqrt(dx * dx + dy * dy);
+                if (length > bestLength)
+                {
+                    bestLength = length;
+                    bestAngle = Math.Atan2(dy, dx);
+                }
+            }
+
+            return bestAngle;
+        }
+
+        private static List<BoardSketchPoint> RotateSketchPoints(IEnumerable<BoardSketchPoint> points, double angle)
+        {
+            double c = Math.Cos(angle);
+            double s = Math.Sin(angle);
+            return points
+                .Select(point => new BoardSketchPoint
+                {
+                    X = point.X * c - point.Y * s,
+                    Y = point.X * s + point.Y * c
+                })
+                .ToList();
         }
 
         private static void AppendEdgeLine(StringBuilder sb, double x1, double y1, double x2, double y2, string coatingNumber, double textX, double textY)
