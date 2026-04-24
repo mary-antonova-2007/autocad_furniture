@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+  SchemaVersion="1.0"
+  AutodeskProduct="AutoCAD"
+  Name="AutoCAD Board Sorter"
+  Description="Sorts 3D board solids by layer and thickness"
+  AppVersion="1.0.0"
+  ProductCode="{BBA810F9-2657-48BB-BA79-4B33F386141A}">
+  <CompanyDetails Name="Local" />
+  <Components>
+    <ComponentEntry
+      AppName="AutoCAD_BoardSorter"
+      AppDescription="Board dimensions sorter"
+      ModuleName="./Contents/Windows/2025/AutoCAD_BoardSorter.dll"
+      AppType=".Net"
+      LoadOnAutoCADStartup="True"
+      LoadOnCommandInvocation="True">
+      <RuntimeRequirements OS="Win64" SeriesMin="R25.0" SeriesMax="R25.0" />
+      <Commands GroupName="BoardSorterCommands">
+      <Command Global="BDSORT" Local="BDSORT" />
+      <Command Global="BDPALETTE" Local="BDPALETTE" />
+      <Command Global="BDFACECOLORS" Local="BDFACECOLORS" />
+      <Command Global="BDCLEARFACECOLORS" Local="BDCLEARFACECOLORS" />
+      <Command Global="BDSPEC" Local="BDSPEC" />
+        <Command Global="BDSPECINFO" Local="BDSPECINFO" />
+        <Command Global="BDSPECCLEAR" Local="BDSPECCLEAR" />
+        <Command Global="BDREGISTER" Local="BDREGISTER" />
+        <Command Global="BDUNREGISTER" Local="BDUNREGISTER" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>
