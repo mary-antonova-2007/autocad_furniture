@@ -23,7 +23,7 @@ using WinRegistryValueKind = Microsoft.Win32.RegistryValueKind;
 
 namespace AutoCAD_BoardSorter
 {
-    public sealed class BoardSorterCommands : IExtensionApplication
+    public sealed partial class BoardSorterCommands : IExtensionApplication
     {
         private const string AppName = "AutoCAD_BoardSorter";
 
@@ -32,7 +32,7 @@ namespace AutoCAD_BoardSorter
             Document doc = Application.DocumentManager.MdiActiveDocument;
             if (doc != null)
             {
-                doc.Editor.WriteMessage("\nAutoCAD_BoardSorter loaded. Commands: BDSORT, BDPALETTE, BDFACECOLORS, BDCLEARFACECOLORS, BDSPEC, BDSPECINFO, BDSPECCLEAR.");
+                doc.Editor.WriteMessage("\nAutoCAD_BoardSorter loaded. Commands: BOM, BDSORT, BDASSEMBLY, BDPALETTE, BDASSEMBLYPALETTE, BDMATERIALS, BDFACECOLORS, BDCLEARFACECOLORS, BDSPEC, BDSPECINFO, BDSPECCLEAR, BDMAKECONTAINER, BDHIDECONTAINERS, BDSHOWCONTAINERS, BDISOLATEASSEMBLY, BDSHOWALL, BDASSEMBLYEDITOR.");
             }
         }
 
@@ -40,6 +40,7 @@ namespace AutoCAD_BoardSorter
         {
         }
 
+        [CommandMethod("BOM")]
         [CommandMethod("BDSORT")]
         public void SortBoards()
         {
@@ -51,12 +52,6 @@ namespace AutoCAD_BoardSorter
 
             Database db = doc.Database;
             Editor ed = doc.Editor;
-
-            string assemblyNumber = PromptString(ed, "\nНомер сборки", true);
-            if (assemblyNumber == null)
-            {
-                return;
-            }
 
             var ids = PromptSolidSelection(ed);
             if (ids == null)
@@ -121,6 +116,7 @@ namespace AutoCAD_BoardSorter
                         LengthMm = Round1(length),
                         WidthMm = Round1(width),
                         ThicknessMm = Round1(thickness),
+                        AssemblyNumber = FirstNonBlank(existingSpecification == null ? null : existingSpecification.AssemblyNumber, string.Empty),
                         PartName = FirstNonBlank(existingSpecification == null ? null : existingSpecification.PartName, "Деталь"),
                         Material = FirstNonBlank(existingSpecification == null ? null : existingSpecification.Material, (string.IsNullOrWhiteSpace(solid.Layer) ? "Материал" : solid.Layer.Trim()) + " " + FormatMaterialThickness(Round1(thickness)) + " мм"),
                         Method = method,
@@ -158,15 +154,64 @@ namespace AutoCAD_BoardSorter
                 groups[i].Number = i + 1;
             }
 
-            int specificationCount = WriteSpecifications(db, groups, assemblyNumber);
+            int specificationCount = WriteSpecifications(db, groups);
 
             PrintReport(ed, groups);
-            string csvPath = WriteCsv(db, groups, assemblyNumber);
-            string xlsxPath = WriteXlsx(db, groups, assemblyNumber);
+            string csvPath = WriteCsv(db, groups);
+            string xlsxPath = WriteXlsx(db, groups);
             ed.WriteMessage("\nСпецификация записана в тел: {0}.", specificationCount);
             ed.WriteMessage("\nCSV: {0}", csvPath);
             ed.WriteMessage("\nExcel: {0}", xlsxPath);
             ed.WriteMessage("\nЛог BDSORT: {0}", sortLogPath);
+        }
+
+        [CommandMethod("BDASSEMBLY")]
+        public void WriteAssemblyNumber()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                return;
+            }
+
+            Editor ed = doc.Editor;
+            Database db = doc.Database;
+
+            List<ObjectId> ids = PromptSolidSelection(ed);
+            if (ids == null || ids.Count == 0)
+            {
+                ed.WriteMessage("\nНичего не выбрано.");
+                return;
+            }
+
+            string assemblyNumber = PromptString(ed, "\nНомер сборки", true);
+            if (assemblyNumber == null)
+            {
+                return;
+            }
+
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                int written = 0;
+                foreach (ObjectId id in ids)
+                {
+                    var solid = tr.GetObject(id, OpenMode.ForWrite, false) as Solid3d;
+                    if (solid == null || solid.IsErased)
+                    {
+                        continue;
+                    }
+
+                    SpecificationData existing;
+                    SpecificationStorage.TryRead(solid, tr, out existing);
+                    var data = existing ?? new SpecificationData();
+                    data.AssemblyNumber = assemblyNumber ?? string.Empty;
+                    SpecificationStorage.Write(solid, data, tr);
+                    written++;
+                }
+
+                tr.Commit();
+                ed.WriteMessage("\nНомер сборки записан в тел: {0}.", written);
+            }
         }
 
         [CommandMethod("BDPALETTE")]
@@ -412,6 +457,9 @@ namespace AutoCAD_BoardSorter
                         continue;
                     }
 
+                    SpecificationData existing;
+                    SpecificationStorage.TryRead(solid, tr, out existing);
+                    data.AssemblyNumber = FirstNonBlank(existing == null ? null : existing.AssemblyNumber, data.AssemblyNumber);
                     SpecificationStorage.Write(solid, data, tr);
                     written++;
                 }
@@ -655,9 +703,6 @@ namespace AutoCAD_BoardSorter
 
         private static SpecificationData PromptSpecificationData(Editor ed)
         {
-            string assemblyNumber = PromptString(ed, "\nНомер сборки", true);
-            if (assemblyNumber == null) return null;
-
             string partNumber = PromptString(ed, "\nНомер детали", true);
             if (partNumber == null) return null;
 
@@ -691,7 +736,6 @@ namespace AutoCAD_BoardSorter
 
             return new SpecificationData
             {
-                AssemblyNumber = assemblyNumber,
                 PartNumber = partNumber,
                 PartName = partName,
                 PartType = partType,
@@ -791,6 +835,7 @@ namespace AutoCAD_BoardSorter
             return boards
                 .GroupBy(x => new
                 {
+                    x.AssemblyNumber,
                     x.Layer,
                     x.LengthMm,
                     x.WidthMm,
@@ -811,6 +856,7 @@ namespace AutoCAD_BoardSorter
                     var first = g.First();
                     var boardGroup = new BoardGroup
                     {
+                        AssemblyNumber = first.AssemblyNumber,
                         Layer = first.Layer,
                         LengthMm = first.LengthMm,
                         WidthMm = first.WidthMm,
@@ -856,20 +902,10 @@ namespace AutoCAD_BoardSorter
                 return first ? primary : secondary;
             }
 
-            if (!string.IsNullOrWhiteSpace(primary))
-            {
-                return primary;
-            }
-
-            if (!string.IsNullOrWhiteSpace(secondary))
-            {
-                return secondary;
-            }
-
-            return string.Empty;
+            return first ? primary : secondary;
         }
 
-        private static int WriteSpecifications(Database db, IList<BoardGroup> groups, string assemblyNumber)
+        private static int WriteSpecifications(Database db, IList<BoardGroup> groups)
         {
             int written = 0;
 
@@ -888,7 +924,7 @@ namespace AutoCAD_BoardSorter
                         SpecificationData existing;
                         SpecificationStorage.TryRead(solid, tr, out existing);
 
-                        SpecificationStorage.Write(solid, BuildSpecification(group, existing, assemblyNumber), tr);
+                        SpecificationStorage.Write(solid, BuildSpecification(group, existing), tr);
                         written++;
                     }
                 }
@@ -899,7 +935,7 @@ namespace AutoCAD_BoardSorter
             return written;
         }
 
-        private static SpecificationData BuildSpecification(BoardGroup group, SpecificationData existing, string assemblyNumber)
+        private static SpecificationData BuildSpecification(BoardGroup group, SpecificationData existing)
         {
             bool rotate = existing != null ? existing.RotateLengthWidth : group.RotateLengthWidth;
             double length = rotate ? group.WidthMm : group.LengthMm;
@@ -912,7 +948,7 @@ namespace AutoCAD_BoardSorter
 
             return new SpecificationData
             {
-                AssemblyNumber = assemblyNumber ?? string.Empty,
+                AssemblyNumber = FirstNonBlank(existing == null ? null : existing.AssemblyNumber, group.AssemblyNumber),
                 PartNumber = group.Number.ToString(CultureInfo.InvariantCulture),
                 PartName = FirstNonBlank(existing == null ? null : existing.PartName, "Деталь"),
                 PartType = FirstNonBlank(existing == null ? null : existing.PartType, "Площадной"),
@@ -933,6 +969,11 @@ namespace AutoCAD_BoardSorter
         private static string DisplayPartName(BoardGroup group)
         {
             return group == null ? "Деталь" : FirstNonBlank(group.PartName, "Деталь");
+        }
+
+        private static string DisplayAssemblyNumber(BoardGroup group)
+        {
+            return group == null ? string.Empty : FirstNonBlank(group.AssemblyNumber, string.Empty);
         }
 
         private static string DisplayMaterial(BoardGroup group)
@@ -1220,7 +1261,7 @@ namespace AutoCAD_BoardSorter
             ed.WriteMessage("\n{0}", new string('=', 132));
         }
 
-        private static string WriteCsv(Database db, IList<BoardGroup> groups, string assemblyNumber)
+        private static string WriteCsv(Database db, IList<BoardGroup> groups)
         {
             string drawingPath = db.Filename;
             string directory = string.IsNullOrWhiteSpace(drawingPath)
@@ -1239,7 +1280,7 @@ namespace AutoCAD_BoardSorter
 
             foreach (BoardGroup group in groups)
             {
-                sb.Append(EscapeCsv(assemblyNumber)).Append(';')
+                sb.Append(EscapeCsv(DisplayAssemblyNumber(group))).Append(';')
                     .Append(group.Number.ToString(CultureInfo.InvariantCulture)).Append(';')
                     .Append(EscapeCsv(DisplayPartName(group))).Append(';')
                     .Append(EscapeCsv(DisplayMaterial(group))).Append(';')
@@ -1274,7 +1315,7 @@ namespace AutoCAD_BoardSorter
             return path;
         }
 
-        private static string WriteXlsx(Database db, IList<BoardGroup> groups, string assemblyNumber)
+        private static string WriteXlsx(Database db, IList<BoardGroup> groups)
         {
             string drawingPath = db.Filename;
             string directory = string.IsNullOrWhiteSpace(drawingPath)
@@ -1296,7 +1337,7 @@ namespace AutoCAD_BoardSorter
                 AddZipText(archive, "xl/workbook.xml", XlsxWorkbook());
                 AddZipText(archive, "xl/_rels/workbook.xml.rels", XlsxWorkbookRels());
                 AddZipText(archive, "xl/styles.xml", XlsxStyles());
-                AddZipText(archive, "xl/worksheets/sheet1.xml", XlsxSheet(groups, coatingNumbers, assemblyNumber));
+                AddZipText(archive, "xl/worksheets/sheet1.xml", XlsxSheet(groups, coatingNumbers));
                 AddZipText(archive, "xl/worksheets/_rels/sheet1.xml.rels", XlsxSheetRels());
                 AddZipText(archive, "xl/drawings/drawing1.xml", XlsxDrawing(groups));
                 AddZipText(archive, "xl/drawings/_rels/drawing1.xml.rels", XlsxDrawingRels(groups));
@@ -1398,7 +1439,7 @@ namespace AutoCAD_BoardSorter
                 + "</styleSheet>";
         }
 
-        private static string XlsxSheet(IList<BoardGroup> groups, Dictionary<string, int> coatingNumbers, string assemblyNumber)
+        private static string XlsxSheet(IList<BoardGroup> groups, Dictionary<string, int> coatingNumbers)
         {
             string[] headers =
             {
@@ -1432,7 +1473,7 @@ namespace AutoCAD_BoardSorter
             foreach (BoardGroup group in groups)
             {
                 sb.Append("<row r=\"").Append(row.ToString(CultureInfo.InvariantCulture)).Append("\" ht=\"98\" customHeight=\"1\">");
-                AppendInlineCell(sb, 1, row, assemblyNumber, 0);
+                AppendInlineCell(sb, 1, row, DisplayAssemblyNumber(group), 0);
                 AppendNumberCell(sb, 2, row, group.Number);
                 AppendInlineCell(sb, 3, row, DisplayPartName(group), 0);
                 AppendInlineCell(sb, 4, row, DisplayMaterial(group), 0);

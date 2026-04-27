@@ -94,11 +94,16 @@ namespace AutoCAD_BoardSorter.Geometry
                 return slots;
             }
 
+            FaceRecord primaryPlateFace = FindPrimaryPlateFace(faces, axes);
+            FaceRecord oppositePlateFace = FindOppositePlateFace(faces, primaryPlateFace, axes);
+
             if (log != null)
             {
                 log.Info("  axes length=" + axes.Length.ToString("0.###", CultureInfo.InvariantCulture)
                     + " width=" + axes.Width.ToString("0.###", CultureInfo.InvariantCulture)
                     + " rotate=" + ((specification != null && specification.RotateLengthWidth) ? "yes" : "no"));
+                log.Info("  plate primary=" + (primaryPlateFace == null ? "<null>" : primaryPlateFace.Key)
+                    + " opposite=" + (oppositePlateFace == null ? "<null>" : oppositePlateFace.Key));
             }
 
             foreach (KeyValuePair<string, string> pair in coatings)
@@ -115,13 +120,21 @@ namespace AutoCAD_BoardSorter.Geometry
                     continue;
                 }
 
-                if (face.Normal.Length > VectorMath.Eps)
+                if (primaryPlateFace != null && IsSameFace(face, primaryPlateFace))
                 {
-                    ApplySlot(slots, axes, face.Normal, pair.Value, specification != null && specification.RotateLengthWidth);
+                    slots.P1 = MergeCoating(slots.P1, pair.Value);
+                }
+                else if (oppositePlateFace != null && IsSameFace(face, oppositePlateFace))
+                {
+                    slots.P2 = MergeCoating(slots.P2, pair.Value);
+                }
+                else if (face.Normal.Length > VectorMath.Eps)
+                {
+                    ApplyEdgeSlot(slots, axes, face.Normal, pair.Value, specification != null && specification.RotateLengthWidth);
                 }
                 else
                 {
-                    ApplySlotFromFaceCenter(slots, axes, vertices, face.Center, pair.Value, specification != null && specification.RotateLengthWidth);
+                    ApplyEdgeSlotFromFaceCenter(slots, axes, vertices, face.Center, pair.Value, specification != null && specification.RotateLengthWidth);
                 }
                 if (log != null) log.Info("  applied key=" + pair.Key + " normal=" + FormatVector(face.Normal) + " value=\"" + pair.Value + "\"");
             }
@@ -238,7 +251,86 @@ namespace AutoCAD_BoardSorter.Geometry
                 + "," + vector.Z.ToString("0.###", CultureInfo.InvariantCulture);
         }
 
-        private static void ApplySlot(BoardCoatingSlots slots, BoardAxes axes, Vector3d normal, string coating, bool rotate)
+        private static FaceRecord FindPrimaryPlateFace(IEnumerable<FaceRecord> faces, BoardAxes axes)
+        {
+            if (faces == null || axes == null)
+            {
+                return null;
+            }
+
+            return faces
+                .Where(x => x.Normal.Length > VectorMath.Eps)
+                .OrderByDescending(x => Math.Abs(VectorMath.Normalize(x.Normal).DotProduct(axes.ThicknessAxis)))
+                .ThenByDescending(x => x.Area)
+                .FirstOrDefault();
+        }
+
+        private static FaceRecord FindOppositePlateFace(IEnumerable<FaceRecord> faces, FaceRecord primaryPlateFace, BoardAxes axes)
+        {
+            if (faces == null || primaryPlateFace == null || axes == null || primaryPlateFace.Normal.Length <= VectorMath.Eps)
+            {
+                return null;
+            }
+
+            double primaryArea = Math.Max(primaryPlateFace.Area, 1.0);
+            double primaryThickness = primaryPlateFace.Center.X * axes.ThicknessAxis.X
+                + primaryPlateFace.Center.Y * axes.ThicknessAxis.Y
+                + primaryPlateFace.Center.Z * axes.ThicknessAxis.Z;
+
+            FaceRecord bestFace = null;
+            double bestScore = double.MinValue;
+
+            foreach (FaceRecord candidate in faces)
+            {
+                if (IsSameFace(candidate, primaryPlateFace) || candidate.Normal.Length <= VectorMath.Eps)
+                {
+                    continue;
+                }
+
+                Vector3d candidateNormal = VectorMath.Normalize(candidate.Normal);
+                double alignment = candidateNormal.DotProduct(axes.ThicknessAxis);
+                if (alignment > -DirectionTolerance)
+                {
+                    continue;
+                }
+
+                double areaRatio = Math.Min(candidate.Area, primaryArea) / Math.Max(candidate.Area, primaryArea);
+                if (areaRatio < 0.6)
+                {
+                    continue;
+                }
+
+                double candidateThickness = candidate.Center.X * axes.ThicknessAxis.X
+                    + candidate.Center.Y * axes.ThicknessAxis.Y
+                    + candidate.Center.Z * axes.ThicknessAxis.Z;
+                double separation = Math.Abs(candidateThickness - primaryThickness);
+                double score = areaRatio * 1000000.0 + separation;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestFace = candidate;
+                }
+            }
+
+            return bestFace;
+        }
+
+        private static bool IsSameFace(FaceRecord left, FaceRecord right)
+        {
+            if (left == null || right == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(left.Key, right.Key, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return left.Keys.Overlaps(right.Keys);
+        }
+
+        private static void ApplyEdgeSlot(BoardCoatingSlots slots, BoardAxes axes, Vector3d normal, string coating, bool rotate)
         {
             Vector3d n = VectorMath.Normalize(normal);
             double p = n.DotProduct(axes.ThicknessAxis);
@@ -247,15 +339,6 @@ namespace AutoCAD_BoardSorter.Geometry
 
             if (Math.Abs(p) >= DirectionTolerance)
             {
-                if (p >= 0.0)
-                {
-                    slots.P1 = MergeCoating(slots.P1, coating);
-                }
-                else
-                {
-                    slots.P2 = MergeCoating(slots.P2, coating);
-                }
-
                 return;
             }
 
@@ -290,7 +373,7 @@ namespace AutoCAD_BoardSorter.Geometry
             }
         }
 
-        private static void ApplySlotFromFaceCenter(BoardCoatingSlots slots, BoardAxes axes, IEnumerable<Point3d> vertices, Point3d center, string coating, bool rotate)
+        private static void ApplyEdgeSlotFromFaceCenter(BoardCoatingSlots slots, BoardAxes axes, IEnumerable<Point3d> vertices, Point3d center, string coating, bool rotate)
         {
             Point3d solidCenter = CenterOf(vertices);
             Vector3d offset = center - solidCenter;
@@ -676,6 +759,7 @@ namespace AutoCAD_BoardSorter.Geometry
             var pointIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (EdgeRecord edge in edgeRecords)
             {
+                FaceRecord edgeFace = FindFaceForEdge(edge.Key, faces, plateFace);
                 string coating = FindCoatingForEdge(edge.Key, faces, plateFace, coatings);
                 int previous = -1;
                 int segmentIndex = 0;
@@ -689,6 +773,7 @@ namespace AutoCAD_BoardSorter.Geometry
                         {
                             StartIndex = previous,
                             EndIndex = current,
+                            FaceKey = edgeFace == null ? string.Empty : edgeFace.Key,
                             Coating = coating,
                             ShowLabel = segmentIndex == labelSegment
                         });
@@ -909,6 +994,26 @@ namespace AutoCAD_BoardSorter.Geometry
 
         private static string FindCoatingForEdge(string edgeKey, IEnumerable<FaceRecord> faces, FaceRecord plateFace, IDictionary<string, string> coatings)
         {
+            FaceRecord face = FindFaceForEdge(edgeKey, faces, plateFace);
+            if (face == null)
+            {
+                return string.Empty;
+            }
+
+            foreach (string key in face.Keys)
+            {
+                string coating;
+                if (coatings.TryGetValue(key, out coating) && !string.IsNullOrWhiteSpace(coating))
+                {
+                    return coating;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static FaceRecord FindFaceForEdge(string edgeKey, IEnumerable<FaceRecord> faces, FaceRecord plateFace)
+        {
             foreach (FaceRecord face in faces)
             {
                 if (ReferenceEquals(face, plateFace) || !face.EdgeKeys.Contains(edgeKey))
@@ -916,17 +1021,10 @@ namespace AutoCAD_BoardSorter.Geometry
                     continue;
                 }
 
-                foreach (string key in face.Keys)
-                {
-                    string coating;
-                    if (coatings.TryGetValue(key, out coating) && !string.IsNullOrWhiteSpace(coating))
-                    {
-                        return coating;
-                    }
-                }
+                return face;
             }
 
-            return string.Empty;
+            return null;
         }
 
         private static bool TryGetFaceNormal(BrepFace face, out Vector3d normal)

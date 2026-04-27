@@ -29,13 +29,13 @@ namespace AutoCAD_BoardSorter.Ui
             }
 
             control = new SpecificationPaletteControl();
-            paletteSet = new PaletteSet("Спецификация", PaletteId)
+            paletteSet = new PaletteSet("Спецификация и облицовка", PaletteId)
             {
                 Style = PaletteSetStyles.ShowAutoHideButton
                     | PaletteSetStyles.ShowCloseButton
                     | PaletteSetStyles.ShowPropertiesMenu,
-                MinimumSize = new System.Drawing.Size(330, 420),
-                Size = new System.Drawing.Size(390, 560),
+                MinimumSize = new System.Drawing.Size(380, 620),
+                Size = new System.Drawing.Size(520, 760),
                 DockEnabled = DockSides.Left | DockSides.Right
             };
 

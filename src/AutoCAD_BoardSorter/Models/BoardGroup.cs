@@ -10,6 +10,7 @@ namespace AutoCAD_BoardSorter.Models
         public double LengthMm { get; set; }
         public double WidthMm { get; set; }
         public double ThicknessMm { get; set; }
+        public string AssemblyNumber { get; set; }
         public string PartName { get; set; }
         public string Material { get; set; }
         public string Method { get; set; }
